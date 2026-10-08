@@ -1,0 +1,44 @@
+version: 0.2
+
+# AWS CodeBuild: build the backend image and push it to ECR.
+# The CodeBuild project must run in privileged mode (required for Docker builds).
+
+env:
+  variables:
+    AWS_REGION_ECR: ap-southeast-1
+    ECR_REGISTRY: 811688201434.dkr.ecr.ap-southeast-1.amazonaws.com
+    ECR_REPOSITORY: trungnxt
+    IMAGE_NAME: class-service
+    CONTAINER_NAME: class-service
+    # The Dockerfile uses `RUN --mount=type=cache`, which needs BuildKit
+    DOCKER_BUILDKIT: '1'
+
+phases:
+  pre_build:
+    commands:
+      - echo "Logging in to Amazon ECR..."
+      - aws ecr get-login-password --region "$AWS_REGION_ECR" | docker login --username AWS --password-stdin "$ECR_REGISTRY"
+      - COMMIT_SHA=$(echo "${CODEBUILD_RESOLVED_SOURCE_VERSION:-build-$CODEBUILD_BUILD_NUMBER}" | cut -c1-7)
+      - IMAGE_URI="$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_NAME-$COMMIT_SHA"
+      - LATEST_URI="$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_NAME-latest"
+      - echo "Image URI is $IMAGE_URI"
+
+  build:
+    commands:
+      - echo "Building Docker image..."
+      - docker build -t "$IMAGE_URI" -t "$LATEST_URI" .
+
+  post_build:
+    commands:
+      # post_build runs even when the build phase fails — do not push a missing image
+      - if [ "$CODEBUILD_BUILD_SUCCEEDING" != "1" ]; then echo "Build failed, skipping push"; exit 1; fi
+      - echo "Pushing image to ECR..."
+      - docker push "$IMAGE_URI"
+      - docker push "$LATEST_URI"
+      # Consumed by the CodePipeline "Amazon ECS" deploy action
+      - printf '[{"name":"%s","imageUri":"%s"}]' "$CONTAINER_NAME" "$IMAGE_URI" > imagedefinitions.json
+      - cat imagedefinitions.json
+
+artifacts:
+  files:
+    - imagedefinitions.json
